@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+MODE="${1:-sec}"
+if [[ "$MODE" != "sec" && "$MODE" != "court" ]]; then
+  echo "Usage: ./run.sh [sec|court] [-i input.xlsx] [-s sheet] [-n rows] [-r rps] [-c conc] [-t timeout] [-l log]"
+  exit 2
+fi
+shift || true
+
 INPUT_XLSX="${INPUT_XLSX:-input.xlsx}"
 INPUT_SHEET="${INPUT_SHEET:-}"
 LIMIT_ROWS="${LIMIT_ROWS:-0}"
@@ -24,8 +31,15 @@ done
 
 export INPUT_XLSX INPUT_SHEET LIMIT_ROWS MAX_RPS MAX_CONCURRENCY HTTP_TIMEOUT LOG_LEVEL
 
-echo "[run.sh] Running: python3 main.py"
+if [[ "$MODE" == "sec" ]]; then
+  ENTRY="main.py"
+else
+  ENTRY="main_court.py"
+fi
+
+echo "[run.sh] Mode: $MODE"
+echo "[run.sh] Running: python3 $ENTRY"
 echo "[run.sh] INPUT_XLSX=$INPUT_XLSX  INPUT_SHEET=${INPUT_SHEET:-<active>}  LIMIT_ROWS=$LIMIT_ROWS"
 echo "[run.sh] MAX_RPS=$MAX_RPS  MAX_CONCURRENCY=$MAX_CONCURRENCY  HTTP_TIMEOUT=$HTTP_TIMEOUT  LOG_LEVEL=$LOG_LEVEL"
 
-python3 main.py
+python3 "$ENTRY"
