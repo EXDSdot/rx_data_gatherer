@@ -2,8 +2,8 @@
 set -euo pipefail
 
 MODE="${1:-sec}"
-if [[ "$MODE" != "sec" && "$MODE" != "court" ]]; then
-  echo "Usage: ./run.sh [sec|court] [-i input.xlsx] [-s sheet] [-n rows] [-r rps] [-c conc] [-t timeout] [-l log]"
+if [[ "$MODE" != "sec" && "$MODE" != "court" && "$MODE" != "insider" && "$MODE" != "submissions" ]]; then
+  echo "Usage: ./run.sh [sec|court|insider|submissions] [-i input.xlsx] [-s sheet] [-n rows] [-r rps] [-c conc] [-t timeout] [-l log]"
   exit 2
 fi
 shift || true
@@ -31,10 +31,16 @@ done
 
 export INPUT_XLSX INPUT_SHEET LIMIT_ROWS MAX_RPS MAX_CONCURRENCY HTTP_TIMEOUT LOG_LEVEL
 
+
+
 if [[ "$MODE" == "sec" ]]; then
   ENTRY="main.py"
-else
+elif [[ "$MODE" == "court" ]]; then
   ENTRY="main_court.py"
+elif [[ "$MODE" == "insider" ]]; then
+  ENTRY="main_insider.py"
+else
+  ENTRY="main_submissions.py"
 fi
 
 echo "[run.sh] Mode: $MODE"

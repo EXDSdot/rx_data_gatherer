@@ -174,7 +174,7 @@ class EdgarAsyncClient:
         headers = {
             "User-Agent": settings.user_agent,
             "Accept-Encoding": "gzip, deflate",
-            "Host": "data.sec.gov",
+            # DO NOT set Host; httpx will set correct Host per-domain (data.sec.gov vs www.sec.gov)
         }
 
         self._client = httpx.AsyncClient(
@@ -221,4 +221,9 @@ class EdgarAsyncClient:
     async def get_company_facts(self, cik: str | int) -> dict[str, Any]:
         cik10 = self.normalize_cik(cik)
         url = f"{self.BASE}/api/xbrl/companyfacts/CIK{cik10}.json"
+        return await self._get_json(url)
+
+    async def get_submissions(self, cik: str | int) -> dict[str, Any]:
+        cik10 = self.normalize_cik(cik)
+        url = f"{self.BASE}/submissions/CIK{cik10}.json"
         return await self._get_json(url)
