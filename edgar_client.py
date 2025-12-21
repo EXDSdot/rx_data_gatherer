@@ -6,7 +6,8 @@ import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any
-
+import os
+from pathlib import Path
 import httpx
 from aiolimiter import AsyncLimiter
 from rich.live import Live
@@ -18,7 +19,6 @@ from tenacity import (
 )
 
 from config import Settings
-
 
 # -----------------------------
 # Logging
@@ -48,13 +48,11 @@ def setup_logging(log_path: str, console_level: int = logging.ERROR) -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-
 # -----------------------------
 # Exceptions
 # -----------------------------
 class EdgarError(RuntimeError):
     pass
-
 
 # -----------------------------
 # Progress Stats
@@ -128,7 +126,6 @@ class RunStats:
                 "elapsed": elapsed,
             }
 
-
 async def progress_reporter(live: Live, stats: RunStats, refresh_s: float = 0.2) -> None:
     while True:
         snap = await stats.snapshot()
@@ -156,7 +153,6 @@ async def progress_reporter(live: Live, stats: RunStats, refresh_s: float = 0.2)
 
         await asyncio.sleep(refresh_s)
 
-
 # -----------------------------
 # EDGAR Async Client
 # -----------------------------
@@ -167,6 +163,11 @@ class EdgarAsyncClient:
         self.log = logging.getLogger(self.__class__.__name__)
         self.settings = settings
         self.stats = stats
+
+        # --- TEMP: dump first successful companyfacts request+json to disk (for documentation) ---
+        self._dump_first_companyfacts: bool = True  # set False (or comment) when done
+        self._dumped_companyfacts: bool = False
+        self._dump_dir: Path = Path(os.getenv("SEC_DUMP_DIR", ".")).resolve()
 
         self.limiter = AsyncLimiter(max_rate=settings.max_rps, time_period=1)
         self._sem = asyncio.Semaphore(settings.max_concurrency)
@@ -214,9 +215,56 @@ class EdgarAsyncClient:
         resp.raise_for_status()
 
         try:
-            return resp.json()
+            data = resp.json()
         except json.JSONDecodeError as e:
             raise EdgarError(f"Failed to decode JSON from {url}") from e
+
+        # --- TEMP: dump first successful companyfacts response ---
+        try:
+            is_companyfacts = "/api/xbrl/companyfacts/CIK" in url
+            if (
+                self._dump_first_companyfacts
+                and is_companyfacts
+                and (not self._dumped_companyfacts)
+                and resp.status_code == 200
+                and isinstance(data, dict)
+            ):
+                self._dump_dir.mkdir(parents=True, exist_ok=True)
+
+                # extract cik from URL for filename
+                # URL looks like: .../companyfacts/CIK0000123456.json
+                cik_part = url.rsplit("CIK", 1)[-1]
+                cik10 = cik_part.replace(".json", "").strip()
+
+                json_path = self._dump_dir / f"sec_companyfacts_first_CIK{cik10}.json"
+                req_path = self._dump_dir / f"sec_companyfacts_first_CIK{cik10}.curl.txt"
+
+                # write json
+                with json_path.open("w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+
+                # write reproducible curl (what you can paste into a doc)
+                ua = self.settings.user_agent
+                curl_cmd = (
+                    "curl -sS --compressed \\\n"
+                    f"  -H 'User-Agent: {ua}' \\\n"
+                    "  -H 'Accept: application/json' \\\n"
+                    f"  '{url}'\n"
+                )
+                with req_path.open("w", encoding="utf-8") as f:
+                    f.write(curl_cmd)
+
+                # mark done (so it only happens once)
+                self._dumped_companyfacts = True
+
+                # log to file (won't spam console since console level is ERROR)
+                self.log.warning("DUMPED first companyfacts request to: %s", str(req_path))
+                self.log.warning("DUMPED first companyfacts json to: %s", str(json_path))
+        except Exception as dump_e:
+            # never break the pipeline because of debug dumping
+            self.log.debug("dump_first_companyfacts failed: %s", dump_e)
+
+        return data
 
     async def get_company_facts(self, cik: str | int) -> dict[str, Any]:
         cik10 = self.normalize_cik(cik)

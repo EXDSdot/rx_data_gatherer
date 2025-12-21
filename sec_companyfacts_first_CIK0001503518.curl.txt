@@ -1,0 +1,4 @@
+curl -sS --compressed \
+  -H 'User-Agent: Iakov Vainshtein (Reichman University; academic research) iakov.vainshtein@post.runi.ac.il' \
+  -H 'Accept: application/json' \
+  'https://data.sec.gov/api/xbrl/companyfacts/CIK0001503518.json'

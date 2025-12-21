@@ -71,6 +71,10 @@ TAG_INT = ["InterestExpense"]
 TAG_OCF = ["NetCashProvidedByUsedInOperatingActivities",
            "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"]
 
+FLOW_ANCHOR_TAGS = [
+    TAG_OI,
+    TAG_OCF,
+]
 
 # For selecting the “best report end date”, use these anchors (coverage scoring)
 ANCHOR_TAGS = [

@@ -100,12 +100,8 @@ def write_rx_snapshot_xlsx(results: list[dict[str, Any]], path: str) -> None:
     ws = wb.active
     ws.title = "rx_snapshot"
 
-    headers = [
-        "cik", "entityName", "event_date", "report_end",
-        "age_days", "report_form", "report_fp", "report_filed",
-        "coverage", "has_companyfacts",
-
-        # base values + tag used
+    # Define base metrics to be duplicated
+    base_metrics = [
         "cash_val", "cash_tag",
         "liab_val", "liab_tag",
         "assets_val", "assets_tag",
@@ -117,17 +113,31 @@ def write_rx_snapshot_xlsx(results: list[dict[str, Any]], path: str) -> None:
         "oi_val", "oi_tag",
         "int_val", "int_tag",
         "ocf_val", "ocf_tag",
-
-        # 6 metrics
         "cash_to_liab",
         "current_ratio",
         "quick_ratio",
         "debt_to_assets",
         "interest_coverage",
         "ocf_to_debt",
-
-        "error",
     ]
+
+    # Construct headers: Metadata + Q columns + A columns + Error
+    headers = ["cik", "entityName", "event_date", "has_companyfacts"]
+    
+    # Quarterly block
+    headers.extend([
+        "q_report_end", "q_age_days", "q_report_form", "q_report_fp", "q_report_filed", "q_coverage"
+    ])
+    headers.extend([f"q_{m}" for m in base_metrics])
+    
+    # Annual block
+    headers.extend([
+        "a_report_end", "a_age_days", "a_report_form", "a_report_fp", "a_report_filed", "a_coverage"
+    ])
+    headers.extend([f"a_{m}" for m in base_metrics])
+
+    headers.append("error")
+
     ws.append(headers)
 
     # header style
@@ -148,41 +158,27 @@ def write_rx_snapshot_xlsx(results: list[dict[str, Any]], path: str) -> None:
             return None
 
     for r in results:
-        meta = r.get("report_meta") or {}
-        ws.append([
-            r.get("cik", ""),
-            r.get("entityName", ""),
-            r.get("event_date", ""),
-            r.get("report_end", ""),
+        # Build the row dynamically based on headers
+        row = []
+        for h in headers:
+            val = r.get(h)
+            
+            # Apply number conversion for value/ratio columns
+            if h.endswith("_val") or h in {"age_days", "coverage"} or h.endswith("_to_liab") or h.endswith("_ratio") or h.endswith("_coverage") or h.endswith("_to_debt"):
+                 # Note: age_days/coverage are inside report_meta in xbrl_extract, 
+                 # but build_rx_snapshot flattens them into "q_age_days", etc.
+                 # So r.get(h) works directly.
+                 # Check if it's a numeric column
+                 if "val" in h or "ratio" in h or "to_" in h or "age_" in h or "coverage" in h:
+                     val = num(val)
+            
+            # has_companyfacts is integer
+            if h == "has_companyfacts":
+                val = int(val) if val is not None else 0
 
-            meta.get("age_days"),
-            meta.get("form"),
-            meta.get("fp"),
-            meta.get("filed"),
-            meta.get("coverage"),
-            int(r.get("has_companyfacts", 0) or 0),
+            row.append(val)
 
-            num(r.get("cash_val")), r.get("cash_tag"),
-            num(r.get("liab_val")), r.get("liab_tag"),
-            num(r.get("assets_val")), r.get("assets_tag"),
-            num(r.get("assets_cur_val")), r.get("assets_cur_tag"),
-            num(r.get("liab_cur_val")), r.get("liab_cur_tag"),
-            num(r.get("ar_val")), r.get("ar_tag"),
-            num(r.get("inv_val")), r.get("inv_tag"),
-            num(r.get("debt_val")), r.get("debt_tag"),
-            num(r.get("oi_val")), r.get("oi_tag"),
-            num(r.get("int_val")), r.get("int_tag"),
-            num(r.get("ocf_val")), r.get("ocf_tag"),
-
-            num(r.get("cash_to_liab")),
-            num(r.get("current_ratio")),
-            num(r.get("quick_ratio")),
-            num(r.get("debt_to_assets")),
-            num(r.get("interest_coverage")),
-            num(r.get("ocf_to_debt")),
-
-            r.get("error", ""),
-        ])
+        ws.append(row)
 
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}1"
@@ -194,327 +190,26 @@ def write_rx_snapshot_xlsx(results: list[dict[str, Any]], path: str) -> None:
             ws.column_dimensions[col].width = 40
         elif h in {"cik"}:
             ws.column_dimensions[col].width = 12
-        elif h.endswith("_tag") or h.startswith("report_"):
+        elif h.endswith("_tag") or "report_" in h:
             ws.column_dimensions[col].width = 22
         else:
             ws.column_dimensions[col].width = 16
 
     # number formats
-    val_cols = [h for h in headers if h.endswith("_val")]
-    ratio_cols = ["cash_to_liab", "current_ratio", "quick_ratio", "debt_to_assets", "interest_coverage", "ocf_to_debt"]
+    # Heuristic: if header ends with _val -> integer/number format
+    # if header is a ratio -> 3 decimals
+    
+    val_suffixes = ("_val",)
+    ratio_suffixes = ("_to_liab", "_ratio", "_to_assets", "_coverage", "_to_debt")
 
-    for row in range(2, ws.max_row + 1):
-        for col_name in val_cols:
-            cidx = headers.index(col_name) + 1
-            cell = ws.cell(row=row, column=cidx)
+    for row_idx in range(2, ws.max_row + 1):
+        for col_idx, h in enumerate(headers, start=1):
+            cell = ws.cell(row=row_idx, column=col_idx)
             if isinstance(cell.value, (int, float)):
-                cell.number_format = "#,##0"
-        for col_name in ratio_cols:
-            cidx = headers.index(col_name) + 1
-            cell = ws.cell(row=row, column=cidx)
-            if isinstance(cell.value, (int, float)):
-                cell.number_format = "0.000"
-
-    wb.save(p)
-    log.info("Wrote %s (%d rows)", str(p), len(results))
-
-from openpyxl import Workbook, load_workbook
-from openpyxl.utils import get_column_letter
-from openpyxl.styles import Font, Alignment, PatternFill
-from datetime import datetime, date
-from pathlib import Path
-from typing import Any
-
-def _to_iso_date(val: Any) -> str | None:
-    if val is None:
-        return None
-    if isinstance(val, (datetime, date)):
-        return val.date().isoformat() if isinstance(val, datetime) else val.isoformat()
-    s = str(val).strip()
-    if not s:
-        return None
-    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
-        return s[:10]
-    for fmt in ("%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", "%m-%d-%Y", "%Y/%m/%d"):
-        try:
-            return datetime.strptime(s, fmt).date().isoformat()
-        except ValueError:
-            pass
-    return None
-
-def load_court_cases_xlsx(path: str, sheet_name: str | None = None) -> list[dict[str, str]]:
-    wb = load_workbook(path, read_only=True, data_only=False)
-    ws = wb[sheet_name] if sheet_name else wb.active
-
-    header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True))
-    header = [str(x).strip().lower() if x is not None else "" for x in header_row]
-
-    def find_col(names: set[str]) -> int | None:
-        for i, h in enumerate(header):
-            if h in names:
-                return i
-        return None
-
-    cik_col = find_col({"cik", "cik10"})  # optional
-    court_col = find_col({"court", "venue", "court_code"}) or 0
-    docket_col = find_col({"docket_number", "docket", "case_number", "case_no"}) or 1
-    filed_col = find_col({"filed_date", "date_filed", "filed", "petition_date"}) or 2
-
-    out: list[dict[str, str]] = []
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        if row is None or len(row) <= max(filter(lambda x: x is not None, [court_col, docket_col, filed_col])):
-            continue
-
-        cik = ""
-        if cik_col is not None and cik_col < len(row) and row[cik_col] is not None:
-            cik = str(row[cik_col]).strip()
-
-        court = str(row[court_col]).strip() if row[court_col] is not None else ""
-        docket_number = str(row[docket_col]).strip() if row[docket_col] is not None else ""
-        filed_iso = _to_iso_date(row[filed_col])
-
-        if not court or not docket_number or not filed_iso:
-            continue
-
-        out.append(
-            {
-                "cik": cik,
-                "court": court,
-                "docket_number": docket_number,
-                "filed_date": filed_iso,
-            }
-        )
-
-    return out
-
-def write_court_metrics_xlsx(results: list[dict[str, Any]], path: str = "court_metrics.xlsx") -> None:
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-
-    # infer window columns present
-    def _window_key_num(k: str) -> int:
-        # "docket_count_90d" -> 90
-        try:
-            return int(k.split("_")[-1].rstrip("d"))
-        except Exception:
-            return 10**9
-
-    docket_cols = sorted([k for k in results for k in (k for k in k and [] )], key=_window_key_num)  # dummy to satisfy linters
-    all_keys = set()
-    for r in results:
-        if isinstance(r, dict):
-            all_keys.update(r.keys())
-
-    docket_cols = sorted([k for k in all_keys if k.startswith("docket_count_")], key=_window_key_num)
-    motion_cols = sorted([k for k in all_keys if k.startswith("motion_count_")], key=_window_key_num)
-
-    headers = [
-        "cik", "court", "docket_number", "filed_date",
-        "found", "docket_id", "total_entries_loaded",
-        *docket_cols,
-        *motion_cols,
-        "error",
-    ]
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "court_metrics"
-    ws.append(headers)
-
-    # header style
-    for col in range(1, len(headers) + 1):
-        c = ws.cell(row=1, column=col)
-        c.font = Font(bold=True)
-        c.fill = PatternFill("solid", fgColor="F2F2F2")
-        c.alignment = Alignment(horizontal="center", vertical="center")
-
-    for r in results:
-        r = r if isinstance(r, dict) else {}
-        row = [
-            r.get("cik", ""),
-            r.get("court", ""),
-            r.get("docket_number", ""),
-            r.get("filed_date", ""),
-            r.get("found", ""),
-            r.get("docket_id", ""),
-            r.get("total_entries_loaded", ""),
-        ]
-        row += [r.get(k, "") for k in docket_cols]
-        row += [r.get(k, "") for k in motion_cols]
-        row += [r.get("error", "")]
-        ws.append(row)
-
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}1"
-
-    for i, h in enumerate(headers, start=1):
-        col = get_column_letter(i)
-        if h in {"error"}:
-            ws.column_dimensions[col].width = 40
-        elif h in {"docket_number"}:
-            ws.column_dimensions[col].width = 22
-        else:
-            ws.column_dimensions[col].width = 16
-
-    wb.save(p)
-
-
-
-import logging
-import os
-from datetime import datetime, date
-from pathlib import Path
-from typing import Any
-
-from openpyxl import Workbook, load_workbook
-from openpyxl.styles import Alignment, Font, PatternFill
-from openpyxl.utils import get_column_letter
-
-
-def _to_iso_date(val: Any) -> str | None:
-    if val is None:
-        return None
-    if isinstance(val, datetime):
-        return val.date().isoformat()
-    if isinstance(val, date):
-        return val.isoformat()
-
-    s = str(val).strip()
-    if not s:
-        return None
-
-    # already ISO
-    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
-        return s[:10]
-
-    # common Excel-ish formats
-    for fmt in ("%m/%d/%Y", "%d/%m/%Y", "%Y/%m/%d", "%d-%m-%Y", "%m-%d-%Y"):
-        try:
-            return datetime.strptime(s, fmt).date().isoformat()
-        except ValueError:
-            pass
-    return None
-
-
-def load_court_cases_xlsx(path: str, sheet_name: str | None = None) -> list[dict[str, str]]:
-    """
-    Expected headers (recommended):
-      cik | court | docket_number | filed_date
-
-    Returns list of dict rows:
-      {"cik": "...", "court": "...", "docket_number": "...", "filed_date": "..."}
-    """
-    log = logging.getLogger("court_xlsx_loader")
-
-    if not os.path.exists(path):
-        log.error("Excel file not found: %s (cwd=%s)", path, os.getcwd())
-        return []
-
-    wb = load_workbook(path, read_only=True, data_only=True)
-    ws = wb[sheet_name] if sheet_name else wb.active
-    log.info("Using sheet: %s", ws.title)
-
-    header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None)
-    if not header_row:
-        return []
-
-    header = [str(x).strip().lower() if x is not None else "" for x in header_row]
-
-    def find_col(cands: set[str]) -> int | None:
-        for i, h in enumerate(header):
-            if h in cands:
-                return i
-        return None
-
-    cik_col = find_col({"cik", "cik10"})
-    court_col = find_col({"court", "court_code"})
-    docket_col = find_col({"docket_number", "docket", "case_number", "case_no", "case"})
-    filed_col = find_col({"filed_date", "filed", "petition_date", "date_filed"})
-
-    if cik_col is None or court_col is None or docket_col is None or filed_col is None:
-        log.error(
-            "Missing required headers. Need: cik, court, docket_number, filed_date. Got: %s",
-            header,
-        )
-        return []
-
-    out: list[dict[str, str]] = []
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        if not row or len(row) <= max(cik_col, court_col, docket_col, filed_col):
-            continue
-
-        cik = str(row[cik_col]).strip() if row[cik_col] is not None else ""
-        court = str(row[court_col]).strip() if row[court_col] is not None else ""
-        docket_number = str(row[docket_col]).strip() if row[docket_col] is not None else ""
-        filed_date = _to_iso_date(row[filed_col])
-
-        if not court or not docket_number or not filed_date:
-            continue
-
-        out.append(
-            {
-                "cik": cik,
-                "court": court,
-                "docket_number": docket_number,
-                "filed_date": filed_date,
-            }
-        )
-
-    return out
-
-
-def write_court_metrics_xlsx(results: list[dict[str, Any]], path: str = "court_metrics.xlsx") -> None:
-    log = logging.getLogger("write_court_metrics_xlsx")
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-
-    # dynamic day columns (collect all keys like docket_count_90d, motion_count_90d)
-    day_keys: list[str] = []
-    if results:
-        keys = set().union(*(r.keys() for r in results if isinstance(r, dict)))
-        day_keys = sorted([k for k in keys if k.startswith("docket_count_") or k.startswith("motion_count_")])
-
-    headers = [
-        "cik",
-        "court",
-        "docket_number",
-        "filed_date",
-        "found",
-        "docket_id",
-        "total_entries_loaded",
-        *day_keys,
-        "error",
-    ]
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "court_metrics"
-    ws.append(headers)
-
-    # header styling
-    for col in range(1, len(headers) + 1):
-        c = ws.cell(row=1, column=col)
-        c.font = Font(bold=True)
-        c.fill = PatternFill("solid", fgColor="F2F2F2")
-        c.alignment = Alignment(horizontal="center", vertical="center")
-
-    for r in results:
-        if not isinstance(r, dict):
-            continue
-        ws.append([r.get(h, "") for h in headers])
-
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}1"
-
-    # column widths
-    for i, h in enumerate(headers, start=1):
-        col = get_column_letter(i)
-        if h in {"error"}:
-            ws.column_dimensions[col].width = 45
-        elif h in {"docket_number"}:
-            ws.column_dimensions[col].width = 22
-        else:
-            ws.column_dimensions[col].width = 16
+                if any(h.endswith(s) for s in val_suffixes):
+                     cell.number_format = "#,##0"
+                elif any(h.endswith(s) for s in ratio_suffixes):
+                     cell.number_format = "0.000"
 
     wb.save(p)
     log.info("Wrote %s (%d rows)", str(p), len(results))

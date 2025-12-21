@@ -1,6 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# -----------------------------
+# venv bootstrap
+# -----------------------------
+VENV_DIR="${VENV_DIR:-.venv}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+REQ_FILE="${REQ_FILE:-requirements.txt}"
+
+if [[ ! -d "$VENV_DIR" ]]; then
+  echo "[run.sh] Creating venv at $VENV_DIR"
+  "$PYTHON_BIN" -m venv "$VENV_DIR"
+fi
+
+# shellcheck disable=SC1091
+source "$VENV_DIR/bin/activate"
+
+# optional: keep pip sane
+python -m pip install --upgrade pip wheel setuptools >/dev/null
+
+if [[ -f "$REQ_FILE" ]]; then
+  echo "[run.sh] Installing deps from $REQ_FILE"
+  python -m pip install -r "$REQ_FILE"
+else
+  echo "[run.sh] WARNING: $REQ_FILE not found; skipping pip install"
+fi
+
+# -----------------------------
+# mode + args
+# -----------------------------
 MODE="${1:-sec}"
 if [[ "$MODE" != "sec" && "$MODE" != "court" && "$MODE" != "insider" && "$MODE" != "submissions" ]]; then
   echo "Usage: ./run.sh [sec|court|insider|submissions] [-i input.xlsx] [-s sheet] [-n rows] [-r rps] [-c conc] [-t timeout] [-l log]"
@@ -31,8 +59,6 @@ done
 
 export INPUT_XLSX INPUT_SHEET LIMIT_ROWS MAX_RPS MAX_CONCURRENCY HTTP_TIMEOUT LOG_LEVEL
 
-
-
 if [[ "$MODE" == "sec" ]]; then
   ENTRY="main.py"
 elif [[ "$MODE" == "court" ]]; then
@@ -44,8 +70,9 @@ else
 fi
 
 echo "[run.sh] Mode: $MODE"
-echo "[run.sh] Running: python3 $ENTRY"
+echo "[run.sh] Python: $(command -v python)"
+echo "[run.sh] Running: python $ENTRY"
 echo "[run.sh] INPUT_XLSX=$INPUT_XLSX  INPUT_SHEET=${INPUT_SHEET:-<active>}  LIMIT_ROWS=$LIMIT_ROWS"
 echo "[run.sh] MAX_RPS=$MAX_RPS  MAX_CONCURRENCY=$MAX_CONCURRENCY  HTTP_TIMEOUT=$HTTP_TIMEOUT  LOG_LEVEL=$LOG_LEVEL"
 
-python3 "$ENTRY"
+python "$ENTRY"
