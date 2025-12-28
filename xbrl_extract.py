@@ -3,14 +3,15 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Any, Iterable
+from typing import Any, Iterable, Optional
 
 import httpx
 
 from config import (
     Settings,
-    ANNUAL_FORMS,      # Imported
-    QUARTERLY_FORMS,   # Imported
+    ALLOWED_FORMS_FOR_REPORT,
+    ANNUAL_FORMS,
+    QUARTERLY_FORMS,
     ANCHOR_TAGS,
     TAG_CASH,
     TAG_LIAB_TOTAL,
@@ -28,19 +29,15 @@ from config import (
 )
 from edgar_client import EdgarAsyncClient
 
-
 log = logging.getLogger("xbrl_extract")
-
 
 def _iso_to_date(s: str) -> date:
     return datetime.strptime(s[:10], "%Y-%m-%d").date()
-
 
 def _as_iso10(s: Any) -> str | None:
     if not isinstance(s, str) or len(s) < 10:
         return None
     return s[:10]
-
 
 def _iter_tag_points(facts: dict[str, Any], tag: str) -> Iterable[tuple[str, dict[str, Any]]]:
     us_gaap = facts.get("facts", {}).get("us-gaap", {}) or {}
@@ -52,7 +49,6 @@ def _iter_tag_points(facts: dict[str, Any], tag: str) -> Iterable[tuple[str, dic
                 if isinstance(pt, dict):
                     yield unit, pt
 
-
 @dataclass(frozen=True)
 class Point:
     tag: str
@@ -63,7 +59,6 @@ class Point:
     fp: str | None
     form: str | None
     accn: str | None
-
 
 def point_for_end(
     facts: dict[str, Any],
@@ -104,19 +99,18 @@ def point_for_end(
 
     return best
 
-
 def latest_report_end_within_window(
     facts: dict[str, Any],
     *,
     event_iso: str,
     max_age_days: int,
-    allowed_forms: set[str],
+    forms_allowed: Optional[set[str]] = None,
 ) -> tuple[str | None, dict[str, Any]]:
     """
     Find a single report end date to use for ALL metrics:
     - must be <= event date
     - must be within max_age_days
-    - must come from the allowed_forms set (e.g. only 10-Q or only 10-K)
+    - must come from an allowed filing form (10-Q/10-K/20-F/40-F)
     Choose the end date that MAXIMIZES input coverage (then latest end).
     """
     event_d = _iso_to_date(event_iso)
@@ -132,8 +126,10 @@ def latest_report_end_within_window(
                 if not end:
                     continue
 
+                forms = forms_allowed or ALLOWED_FORMS_FOR_REPORT
+
                 form = (pt.get("form") or "").upper()
-                if form and form not in allowed_forms:
+                if form and form not in forms:
                     continue
 
                 end_d = _iso_to_date(end)
@@ -157,7 +153,7 @@ def latest_report_end_within_window(
     # coverage scoring: for each candidate end, count how many base inputs exist
     base_inputs = {
         "cash": TAG_CASH,
-        "liab": TAG_LIAB_TOTAL,
+        "liab": TAG_LIAB_TOTAL,  # total liab (with fallback in compute step)
         "assets": TAG_ASSETS,
         "assets_cur": TAG_ASSETS_CUR,
         "liab_cur": TAG_LIAB_CUR,
@@ -172,7 +168,9 @@ def latest_report_end_within_window(
 
     for end in ends_meta.keys():
         cov = 0
-        # liab check
+
+        # “liab_total” might not exist; allow later fallback, so count it if either total exists
+        # OR both current+noncurrent exist.
         liab_total = point_for_end(facts, TAG_LIAB_TOTAL, end)
         if liab_total is not None:
             cov += 1
@@ -181,17 +179,20 @@ def latest_report_end_within_window(
             lnc = point_for_end(facts, TAG_LIAB_NONCUR, end)
             if lc is not None and lnc is not None:
                 cov += 1
-        # debt check
+
+        # debt: count if we can form a debt measure
         dc = point_for_end(facts, TAG_DEBT_CUR, end)
         dl = point_for_end(facts, TAG_DEBT_LT, end)
         if dc is not None or dl is not None:
             cov += 1
-        # rest
+
+        # the rest: direct presence
         for k, tags in base_inputs.items():
             if k in {"liab", "debt_cur", "debt_lt"}:
                 continue
             if point_for_end(facts, tags, end) is not None:
                 cov += 1
+
         ends_coverage[end] = cov
 
     # pick max coverage, then latest end
@@ -199,7 +200,6 @@ def latest_report_end_within_window(
     meta = dict(ends_meta[best_end])
     meta["coverage"] = ends_coverage.get(best_end, 0)
     return best_end, meta
-
 
 def total_liabilities_at_end(facts: dict[str, Any], end_iso: str) -> tuple[float | None, str | None, dict[str, Any]]:
     p = point_for_end(facts, TAG_LIAB_TOTAL, end_iso)
@@ -218,7 +218,6 @@ def total_liabilities_at_end(facts: dict[str, Any], end_iso: str) -> tuple[float
         "form": lc.form or lnc.form,
         "accn": lc.accn or lnc.accn,
     }
-
 
 def total_debt_at_end(facts: dict[str, Any], end_iso: str) -> tuple[float | None, str | None, dict[str, Any]]:
     dc = point_for_end(facts, TAG_DEBT_CUR, end_iso)
@@ -243,7 +242,6 @@ def total_debt_at_end(facts: dict[str, Any], end_iso: str) -> tuple[float | None
 
     return val, "+".join(used), meta
 
-
 def safe_div(a: float | None, b: float | None) -> float | None:
     if a is None or b is None:
         return None
@@ -251,8 +249,28 @@ def safe_div(a: float | None, b: float | None) -> float | None:
         return None
     return a / b
 
+def build_rx_snapshot(
+    facts: dict[str, Any],
+    *,
+    event_iso: str,
+    max_age_days: int,
+    forms_allowed: Optional[set[str]] = None,
+) -> dict[str, Any]:
+    """
+    Returns:
+    - chosen report_end
+    - base values
+    - 6 ratios/metrics
+    """
+    report_end, rep_meta = latest_report_end_within_window(
+        facts,
+        event_iso=event_iso,
+        max_age_days=max_age_days,
+        forms_allowed=forms_allowed,
+    )
+    if report_end is None:
+        return {"has_companyfacts": 1, "report_end": None, "error": "no report end within window"}
 
-def _calculate_metrics_for_report(facts: dict[str, Any], report_end: str, rep_meta: dict[str, Any]) -> dict[str, Any]:
     # base points
     cash_p = point_for_end(facts, TAG_CASH, report_end)
     assets_p = point_for_end(facts, TAG_ASSETS, report_end)
@@ -264,8 +282,8 @@ def _calculate_metrics_for_report(facts: dict[str, Any], report_end: str, rep_me
     int_p = point_for_end(facts, TAG_INT, report_end)
     ocf_p = point_for_end(facts, TAG_OCF, report_end)
 
-    liab_val, liab_tag, _ = total_liabilities_at_end(facts, report_end)
-    debt_val, debt_tag, _ = total_debt_at_end(facts, report_end)
+    liab_val, liab_tag, liab_meta = total_liabilities_at_end(facts, report_end)
+    debt_val, debt_tag, debt_meta = total_debt_at_end(facts, report_end)
 
     cash_val = cash_p.val if cash_p else None
     assets_val = assets_p.val if assets_p else None
@@ -274,46 +292,72 @@ def _calculate_metrics_for_report(facts: dict[str, Any], report_end: str, rep_me
     ar_val = ar_p.val if ar_p else None
     inv_val = inv_p.val if inv_p else None
     oi_val = oi_p.val if oi_p else None
-    int_val = abs(int_p.val) if int_p else None
+    int_val = abs(int_p.val) if int_p else None  # treat interest expense magnitude
     ocf_val = ocf_p.val if ocf_p else None
 
-    # Ratios
+    # -----------------------------
+    # 6 RX metrics (XBRL-feasible)
+    # -----------------------------
+    # 1) Cash / Total Liabilities
     cash_to_liab = safe_div(cash_val, liab_val)
+
+    # 2) Current Ratio = Current Assets / Current Liabilities
     current_ratio = safe_div(assets_cur_val, liab_cur_val)
+
+    # 3) Quick Ratio:
+    #    preferred = (Cash + AR) / Current Liabilities
+    #    fallback = (Current Assets - Inventory) / Current Liabilities
     quick_ratio = None
     if liab_cur_val:
         if cash_val is not None and ar_val is not None:
             quick_ratio = safe_div(cash_val + ar_val, liab_cur_val)
         elif assets_cur_val is not None and inv_val is not None:
             quick_ratio = safe_div(assets_cur_val - inv_val, liab_cur_val)
+
+    # 4) Debt / Assets
     debt_to_assets = safe_div(debt_val, assets_val)
+
+    # 5) Interest Coverage = Operating Income / Interest Expense
     interest_coverage = safe_div(oi_val, int_val)
+
+    # 6) OCF / Debt
     ocf_to_debt = safe_div(ocf_val, debt_val)
 
     return {
+        "has_companyfacts": 1,
         "report_end": report_end,
         "report_meta": rep_meta,
 
         "cash_val": cash_val,
         "cash_tag": cash_p.tag if cash_p else None,
+
         "liab_val": liab_val,
         "liab_tag": liab_tag,
+
         "assets_val": assets_val,
         "assets_tag": assets_p.tag if assets_p else None,
+
         "assets_cur_val": assets_cur_val,
         "assets_cur_tag": assets_cur_p.tag if assets_cur_p else None,
+
         "liab_cur_val": liab_cur_val,
         "liab_cur_tag": liab_cur_p.tag if liab_cur_p else None,
+
         "ar_val": ar_val,
         "ar_tag": ar_p.tag if ar_p else None,
+
         "inv_val": inv_val,
         "inv_tag": inv_p.tag if inv_p else None,
+
         "debt_val": debt_val,
         "debt_tag": debt_tag,
+
         "oi_val": oi_val,
         "oi_tag": oi_p.tag if oi_p else None,
+
         "int_val": int_val,
         "int_tag": int_p.tag if int_p else None,
+
         "ocf_val": ocf_val,
         "ocf_tag": ocf_p.tag if ocf_p else None,
 
@@ -323,65 +367,31 @@ def _calculate_metrics_for_report(facts: dict[str, Any], report_end: str, rep_me
         "debt_to_assets": debt_to_assets,
         "interest_coverage": interest_coverage,
         "ocf_to_debt": ocf_to_debt,
+
+        "error": "",
     }
 
-
-def build_rx_snapshot(
-    facts: dict[str, Any],
-    *,
-    event_iso: str,
-    max_age_days: int,
-) -> dict[str, Any]:
+def prefix_snapshot(prefix: str, snap: dict[str, Any]) -> dict[str, Any]:
     """
-    Returns double snapshot: Quarterly (q_) and Annual (a_) prefixes.
+    Flatten a snapshot dict into prefixed columns.
+
+    - report_meta becomes individual columns
+    - has_companyfacts/report_meta are not duplicated
     """
-    
-    # 1. Quarterly (10-Q)
-    q_end, q_meta = latest_report_end_within_window(
-        facts, event_iso=event_iso, max_age_days=max_age_days, allowed_forms=QUARTERLY_FORMS
-    )
-    if q_end:
-        q_metrics = _calculate_metrics_for_report(facts, q_end, q_meta)
-    else:
-        q_metrics = {}
+    out: dict[str, Any] = {}
 
-    # 2. Annual (10-K, 20-F, 40-F)
-    a_end, a_meta = latest_report_end_within_window(
-        facts, event_iso=event_iso, max_age_days=max_age_days, allowed_forms=ANNUAL_FORMS
-    )
-    if a_end:
-        a_metrics = _calculate_metrics_for_report(facts, a_end, a_meta)
-    else:
-        a_metrics = {}
+    meta = snap.get("report_meta") or {}
+    out[f"{prefix}report_end"] = snap.get("report_end")
+    out[f"{prefix}age_days"] = meta.get("age_days")
+    out[f"{prefix}report_form"] = meta.get("form")
+    out[f"{prefix}report_fp"] = meta.get("fp")
+    out[f"{prefix}report_filed"] = meta.get("filed")
+    out[f"{prefix}coverage"] = meta.get("coverage")
 
-    # 3. Merge with prefixes
-    out: dict[str, Any] = {"has_companyfacts": 1, "error": ""}
-    
-    # helper to merge
-    def merge(metrics: dict, prefix: str):
-        # Flatten report_meta fields: age_days, form, fp, filed, coverage
-        rep_meta = metrics.get("report_meta") or {}
-        out[f"{prefix}report_end"] = metrics.get("report_end")
-        out[f"{prefix}age_days"] = rep_meta.get("age_days")
-        out[f"{prefix}report_form"] = rep_meta.get("form")
-        out[f"{prefix}report_fp"] = rep_meta.get("fp")
-        out[f"{prefix}report_filed"] = rep_meta.get("filed")
-        out[f"{prefix}coverage"] = rep_meta.get("coverage")
-        
-        # Copy values
-        keys = [
-            "cash_val", "cash_tag", "liab_val", "liab_tag", "assets_val", "assets_tag",
-            "assets_cur_val", "assets_cur_tag", "liab_cur_val", "liab_cur_tag",
-            "ar_val", "ar_tag", "inv_val", "inv_tag", "debt_val", "debt_tag",
-            "oi_val", "oi_tag", "int_val", "int_tag", "ocf_val", "ocf_tag",
-            "cash_to_liab", "current_ratio", "quick_ratio", "debt_to_assets",
-            "interest_coverage", "ocf_to_debt"
-        ]
-        for k in keys:
-            out[f"{prefix}{k}"] = metrics.get(k)
-
-    merge(q_metrics, "q_")
-    merge(a_metrics, "a_")
+    for k, v in snap.items():
+        if k in {"has_companyfacts", "report_meta", "report_end"}:
+            continue
+        out[f"{prefix}{k}"] = v
 
     return out
 
@@ -393,21 +403,35 @@ async def fetch_rx_snapshot_for_case(
     cik10: str,
     event_iso: str,
 ) -> dict[str, Any]:
+    """
+    One case = one row: choose latest report within window and compute metrics.
+    """
     try:
         facts = await client.get_company_facts(cik10)
         entity = facts.get("entityName") or ""
 
-        snap = build_rx_snapshot(
+        q_snap = build_rx_snapshot(
             facts,
             event_iso=event_iso,
             max_age_days=settings.max_report_age_days,
+            forms_allowed=QUARTERLY_FORMS,
+        )
+
+        # Annuals can be older than a quarter; widen the window to ~13 months
+        a_snap = build_rx_snapshot(
+            facts,
+            event_iso=event_iso,
+            max_age_days=max(settings.max_report_age_days, 400),
+            forms_allowed=ANNUAL_FORMS,
         )
 
         return {
             "cik": cik10,
             "entityName": entity,
             "event_date": event_iso,
-            **snap,
+            "has_companyfacts": 1,
+            **prefix_snapshot("q_", q_snap),
+            **prefix_snapshot("a_", a_snap),
         }
 
     except httpx.HTTPStatusError as e:
@@ -418,7 +442,8 @@ async def fetch_rx_snapshot_for_case(
                 "entityName": "",
                 "event_date": event_iso,
                 "has_companyfacts": 0,
-                "error": "404 companyfacts",
+                "q_error": "404 companyfacts",
+                "a_error": "404 companyfacts",
             }
         log.exception("HTTPStatusError | %s | %s", cik10, e)
         return {
@@ -426,7 +451,8 @@ async def fetch_rx_snapshot_for_case(
             "entityName": "",
             "event_date": event_iso,
             "has_companyfacts": 0,
-            "error": str(e),
+            "q_error": str(e),
+            "a_error": str(e),
         }
 
     except Exception as e:
@@ -436,5 +462,6 @@ async def fetch_rx_snapshot_for_case(
             "entityName": "",
             "event_date": event_iso,
             "has_companyfacts": 0,
-            "error": str(e),
+            "q_error": str(e),
+            "a_error": str(e),
         }

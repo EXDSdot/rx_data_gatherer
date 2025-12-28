@@ -84,7 +84,7 @@ async def fetch_docket_and_counts(
     filed_date: str,
     cik: str | None = None,
     windows: CourtWindows = CourtWindows(),
-    motion_keywords: Iterable[str] = ("motion",),  # extend later (e.g. "objection")
+    motion_keywords: Iterable[str] = ("motion",),
 ) -> dict[str, Any]:
     log = logging.getLogger("court_metrics")
 
@@ -99,7 +99,8 @@ async def fetch_docket_and_counts(
 
     # 1) find docket
     try:
-        dockets = await client.list_dockets(court=court, docket_number=docket_number, page_size=1)
+        # Fetch a few results to be safe, though usually the first is correct
+        dockets = await client.list_dockets(court=court, docket_number=docket_number, page_size=5)
     except Exception as e:
         log.exception("dockets lookup failed | %s | %s | %s", court, docket_number, e)
         return {"cik": cik or "", "court": court, "docket_number": docket_number, "filed_date": str(baseline), "error": str(e)}
@@ -116,8 +117,10 @@ async def fetch_docket_and_counts(
             "error": "docket not found (check court code + docket_number formatting)",
         }
 
+    # Pick first match
     docket = res[0] if isinstance(res[0], dict) else {}
     docket_id = docket.get("id") or ""
+    case_name = docket.get("case_name") or ""
 
     # 2) pull entries (paginate) and compute counts in windows
     try:
@@ -130,6 +133,7 @@ async def fetch_docket_and_counts(
             "docket_number": docket_number,
             "filed_date": str(baseline),
             "docket_id": docket_id,
+            "case_name": case_name,
             "found": 1,
             "error": str(e),
         }
@@ -139,7 +143,7 @@ async def fetch_docket_and_counts(
     motion_re = re.compile(r"\b(" + "|".join(kws) + r")\b", re.IGNORECASE) if kws else MOTION_RE
 
     # counts
-    max_days = max(windows.days)
+    max_days = max(windows.days) if windows.days else 0
     end_max = baseline + timedelta(days=max_days)
 
     # only consider entries with a usable filed date (and within max window)
@@ -155,8 +159,9 @@ async def fetch_docket_and_counts(
         "docket_number": docket_number,
         "filed_date": str(baseline),
         "docket_id": docket_id,
+        "case_name": case_name,
         "found": 1,
-        "total_entries_loaded": len(entries),
+        "document_count": len(entries),  # Total documents on FreeLaw
     }
 
     for nd in windows.days:
@@ -175,22 +180,6 @@ async def fetch_docket_and_counts(
 
     return out
 
-import os
-
-# async def fetch_court_metrics_for_case(client: CourtListenerAsyncClient, row: dict[str, str]) -> dict[str, Any]:
-#     # windows from env, default 90/120/180
-#     days_s = os.getenv("COURT_DAYS", "90,120,180")
-#     days = tuple(int(x.strip()) for x in days_s.split(",") if x.strip().isdigit())
-#     windows = CourtWindows(days=days or (90, 120, 180))
-
-#     return await fetch_docket_and_counts(
-#         client,
-#         court=row.get("court", ""),
-#         docket_number=row.get("docket_number", ""),
-#         filed_date=row.get("filed_date", ""),
-#         cik=row.get("cik") or "",
-#         windows=windows,
-#     )
 
 async def fetch_court_metrics_for_case(
     client: CourtListenerAsyncClient,

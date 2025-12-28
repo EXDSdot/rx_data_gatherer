@@ -1,4 +1,3 @@
-# main_court.py
 from __future__ import annotations
 
 import asyncio
@@ -9,8 +8,8 @@ from rich.console import Console
 from rich.live import Live
 
 from config import Settings
-from edgar_client import RunStats, progress_reporter, setup_logging  # reuse progress infra
-from io_xlsx import load_court_cases_xlsx, write_court_metrics_xlsx
+from edgar_client import RunStats, progress_reporter, setup_logging  
+from io_court import load_court_cases_xlsx, write_court_metrics_xlsx
 
 from court_client import CourtSettings, CourtListenerAsyncClient
 from court_metrics import fetch_court_metrics_for_case
@@ -55,7 +54,7 @@ async def main() -> int:
     console = Console()
     stats = RunStats(task_name="COURT METRICS", total_units=len(rows))
 
-    court_settings = CourtSettings()  # reads COURTLISTENER_TOKEN, COURT_BASE_URL, etc
+    court_settings = CourtSettings()
     client = CourtListenerAsyncClient(court_settings, stats=stats)
 
     live = Live("", console=console, refresh_per_second=10, transient=True)
@@ -82,6 +81,28 @@ async def main() -> int:
 
         write_court_metrics_xlsx(results, path=out_path)
         log.info("Done. Output: %s", out_path)
+
+        # --- AFTER ACTION REPORT ---
+        total = len(results)
+        # Success = Found (1) AND No Error
+        ok_count = sum(1 for r in results if r.get("found") and not r.get("error"))
+        # Found but failed to get details
+        found_error = sum(1 for r in results if r.get("found") and r.get("error"))
+        # Not found at all
+        not_found = sum(1 for r in results if not r.get("found"))
+
+        success_rate = (ok_count / total * 100) if total > 0 else 0.0
+
+        print("\n" + "="*50)
+        print(f" AFTER ACTION REPORT (Court) | Rate: {success_rate:.1f}%")
+        print("="*50)
+        print(f" Total Cases Processed : {total}")
+        print(f" Successful (OK)       : {ok_count}")
+        print(f" Found but Error       : {found_error}")
+        print(f" Not Found             : {not_found}")
+        print("="*50 + "\n")
+        # ---------------------------
+
         return 0
 
     finally:

@@ -1,120 +1,136 @@
-# court_client.py
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
-import os
-import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
 import httpx
-from aiolimiter import AsyncLimiter
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
+# If you have a global RunStats or similar, import it; otherwise, we use a dummy.
+try:
+    from edgar_client import RunStats
+except ImportError:
+    RunStats = Any
 
-class CourtApiError(RuntimeError):
-    pass
-
+log = logging.getLogger("court_client")
 
 @dataclass(frozen=True)
 class CourtSettings:
-    # CourtListener REST API v3 base (default used by their client lib).   [oai_citation:1‡Invalid URL](data:text/plain;charset=utf-8,Invalid%20citation)
-    base_url: str = os.getenv("COURT_BASE_URL", "https://www.courtlistener.com/api/rest/v3")
-    token: str = os.getenv("COURTLISTENER_TOKEN", "")  # optional
-
-    max_rps: float = float(os.getenv("COURT_MAX_RPS", os.getenv("MAX_RPS", "3")))
-    max_concurrency: int = int(os.getenv("COURT_MAX_CONCURRENCY", os.getenv("MAX_CONCURRENCY", "20")))
-    timeout_seconds: float = float(os.getenv("COURT_HTTP_TIMEOUT", os.getenv("HTTP_TIMEOUT", "30")))
-
+    base_url: str = "https://www.courtlistener.com/api/rest/v3"
+    #token: str | None = None  # Loaded from env in main
+    token  = "0812f348b4f652edc028b3c9ce8927d3827c1353"
+    user_agent: str = "RxDataGatherer/1.0 (internal-research-tool)" # <--- NEW DEFAULT
+    max_rps: float = 2.0
+    max_concurrency: int = 5
+    timeout_seconds: float = 30.0
 
 class CourtListenerAsyncClient:
-    """
-    Minimal async client for CourtListener REST API v3.
-
-    Useful endpoints:
-      - /dockets/
-      - /docket-entries/
-      - /courts/ (optional helper)
-
-    Auth header format: Authorization: Token <token> (if provided).  [oai_citation:2‡Invalid URL](data:text/plain;charset=utf-8,Invalid%20citation)
-    """
-
-    def __init__(self, settings: CourtSettings, stats: Any | None = None) -> None:
-        self.log = logging.getLogger(self.__class__.__name__)
+    def __init__(self, settings: CourtSettings, stats: Optional[RunStats] = None) -> None:
         self.settings = settings
         self.stats = stats
-
-        self.limiter = AsyncLimiter(max_rate=settings.max_rps, time_period=1)
-        self._sem = asyncio.Semaphore(settings.max_concurrency)
-
+        
+        # 1. Define Headers with User-Agent
         headers = {
             "Accept": "application/json",
             "Accept-Encoding": "gzip, deflate",
+            "User-Agent": settings.user_agent,  # <--- CRITICAL FIX
         }
-        if settings.token:
-            headers["Authorization"] = f"Token {settings.token}"  #  [oai_citation:3‡Invalid URL](data:text/plain;charset=utf-8,Invalid%20citation)
+        
+        # 2. Add Token if present
+        #
+        headers["Authorization"] = "Authorization: Token 0812f348b4f652edc028b3c9ce8927d3827c1353"
+        #else:
+         #   log.warning("No CourtListener TOKEN found. You will likely be rate-limited or blocked (401/403).")
 
         self._client = httpx.AsyncClient(
             headers=headers,
-            timeout=httpx.Timeout(settings.timeout_seconds),
+            timeout=settings.timeout_seconds,
             follow_redirects=True,
+            limits=httpx.Limits(
+                max_connections=settings.max_concurrency, 
+                max_keepalive_connections=settings.max_concurrency
+            ),
         )
 
     async def aclose(self) -> None:
         await self._client.aclose()
 
+    async def __aenter__(self) -> "CourtListenerAsyncClient":
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        await self.aclose()
+
     @retry(
-        reraise=True,
-        stop=stop_after_attempt(4),
-        wait=wait_exponential_jitter(initial=0.5, max=8.0),
-        retry=retry_if_exception_type((httpx.RequestError, httpx.HTTPStatusError)),
+        retry=retry_if_exception_type((httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout, httpx.RemoteProtocolError)),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
     )
-    async def _get_json(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        url = f"{self.settings.base_url.rstrip('/')}/{path.lstrip('/')}"
-        params = params or {}
-
-        async with self._sem:
-            async with self.limiter:
-                req_started = time.perf_counter()
-                self.log.debug("GET %s params=%s", url, params)
-                resp = await self._client.get(url, params=params)
-                latency = time.perf_counter() - req_started
-
-                # optional shared stats hook (your RunStats)
-                if self.stats is not None:
-                    try:
-                        await self.stats.record_request(resp.status_code, latency, req_started)
-                    except Exception:
-                        pass
-
-        resp.raise_for_status()
-
+    async def _get_json(self, endpoint: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        url = f"{self.settings.base_url}/{endpoint}/"
+        
         try:
-            return resp.json()
-        except json.JSONDecodeError as e:
-            raise CourtApiError(f"Failed to decode JSON from {url}") from e
+            resp = await self._client.get(url, params=params)
+            
+            # 429 = Too Many Requests (Rate Limit)
+            if resp.status_code == 429:
+                log.warning("Rate limit hit (429).")
+                resp.raise_for_status()
 
-    async def list_dockets(self, *, court: str, docket_number: str, page_size: int = 1) -> dict[str, Any]:
-        # Django REST style: should filter on field names if exposed
-        return await self._get_json(
-            "dockets/",
-            params={"court": court, "docket_number": docket_number, "page_size": page_size},
-        )
+            # 403/401 handling
+            if resp.status_code in (401, 403):
+                log.error(f"Auth failed ({resp.status_code}) for {url}. Check TOKEN and User-Agent.")
+            
+            resp.raise_for_status()
+            
+            # If empty content
+            if not resp.content:
+                return {}
+                
+            return resp.json()
+
+        except httpx.HTTPStatusError as e:
+            # Pass through 404s cleanly (not found is a valid result state)
+            if e.response.status_code == 404:
+                return {}
+            # Log detail for other errors
+            log.error(f"HTTP Error {e.response.status_code} | {e.request.url} | {e.response.text[:200]}")
+            raise e
+        except Exception as e:
+            log.error(f"Request failed: {url} | {e}")
+            raise e
+
+    # --- Endpoints ---
+
+    async def list_dockets(
+        self, 
+        court: str, 
+        docket_number: str, 
+        page_size: int = 20
+    ) -> dict[str, Any]:
+        """
+        Search for a docket by court and docket number.
+        """
+        params = {
+            "court": court,
+            "docket_number": docket_number,
+            "page_size": page_size,
+        }
+        return await self._get_json("dockets", params=params)
 
     async def list_docket_entries(
-        self,
-        *,
-        docket_id: int,
+        self, 
+        docket_id: int, 
         page: int = 1,
-        page_size: int = 100,
-        extra_params: dict[str, Any] | None = None,
+        page_size: int = 100
     ) -> dict[str, Any]:
-        params = {"docket": docket_id, "page": page, "page_size": page_size}
-        if extra_params:
-            params.update(extra_params)
-        return await self._get_json("docket-entries/", params=params)
-
-    async def list_courts(self, *, search: str, page_size: int = 5) -> dict[str, Any]:
-        return await self._get_json("courts/", params={"search": search, "page_size": page_size})
+        """
+        Get entries for a specific docket ID (obtained from list_dockets).
+        """
+        params = {
+            "docket": docket_id,
+            "page": page,
+            "page_size": page_size,
+        }
+        return await self._get_json("docket-entries", params=params)

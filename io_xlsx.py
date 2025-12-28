@@ -93,6 +93,11 @@ def load_cik_event_dates_xlsx(path: str, sheet_name: str | None = None) -> list[
 
 
 def write_rx_snapshot_xlsx(results: list[dict[str, Any]], path: str) -> None:
+    """Write results to an .xlsx.
+
+    This writer is schema-flexible: it will automatically add any new keys
+    (e.g., q_* and a_* columns) without needing manual header edits.
+    """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
 
@@ -100,43 +105,19 @@ def write_rx_snapshot_xlsx(results: list[dict[str, Any]], path: str) -> None:
     ws = wb.active
     ws.title = "rx_snapshot"
 
-    # Define base metrics to be duplicated
-    base_metrics = [
-        "cash_val", "cash_tag",
-        "liab_val", "liab_tag",
-        "assets_val", "assets_tag",
-        "assets_cur_val", "assets_cur_tag",
-        "liab_cur_val", "liab_cur_tag",
-        "ar_val", "ar_tag",
-        "inv_val", "inv_tag",
-        "debt_val", "debt_tag",
-        "oi_val", "oi_tag",
-        "int_val", "int_tag",
-        "ocf_val", "ocf_tag",
-        "cash_to_liab",
-        "current_ratio",
-        "quick_ratio",
-        "debt_to_assets",
-        "interest_coverage",
-        "ocf_to_debt",
-    ]
+    # Stable header ordering
+    base = ["cik", "entityName", "event_date", "has_companyfacts"]
 
-    # Construct headers: Metadata + Q columns + A columns + Error
-    headers = ["cik", "entityName", "event_date", "has_companyfacts"]
-    
-    # Quarterly block
-    headers.extend([
-        "q_report_end", "q_age_days", "q_report_form", "q_report_fp", "q_report_filed", "q_coverage"
-    ])
-    headers.extend([f"q_{m}" for m in base_metrics])
-    
-    # Annual block
-    headers.extend([
-        "a_report_end", "a_age_days", "a_report_form", "a_report_fp", "a_report_filed", "a_coverage"
-    ])
-    headers.extend([f"a_{m}" for m in base_metrics])
+    all_keys: set[str] = set()
+    for r in results:
+        if isinstance(r, dict):
+            all_keys.update(r.keys())
 
-    headers.append("error")
+    q_keys = sorted(k for k in all_keys if k.startswith("q_"))
+    a_keys = sorted(k for k in all_keys if k.startswith("a_"))
+    other = sorted(k for k in all_keys if k not in set(base) and not k.startswith(("q_", "a_")))
+
+    headers = [h for h in base if h in all_keys] + q_keys + a_keys + other
 
     ws.append(headers)
 
@@ -147,37 +128,46 @@ def write_rx_snapshot_xlsx(results: list[dict[str, Any]], path: str) -> None:
         c.fill = PatternFill("solid", fgColor="F2F2F2")
         c.alignment = Alignment(horizontal="center", vertical="center")
 
-    def num(x: Any) -> float | None:
+    ratio_suffixes = {
+        "cash_to_liab",
+        "current_ratio",
+        "quick_ratio",
+        "debt_to_assets",
+        "interest_coverage",
+        "ocf_to_debt",
+    }
+
+    def is_numeric_col(h: str) -> bool:
+        if h.endswith("_val"):
+            return True
+        if h.endswith("age_days"):
+            return True
+        # ratios (support prefixed q_*/a_*)
+        for suf in ratio_suffixes:
+            if h == suf or h.endswith("_" + suf):
+                return True
+        return False
+
+    def to_number(x: Any) -> float | None:
         if x is None or x == "":
             return None
+        if isinstance(x, bool):
+            return float(int(x))
         if isinstance(x, (int, float)):
             return float(x)
         try:
-            return float(x)
+            return float(str(x).strip())
         except Exception:
             return None
 
     for r in results:
-        # Build the row dynamically based on headers
-        row = []
+        row: list[Any] = []
         for h in headers:
-            val = r.get(h)
-            
-            # Apply number conversion for value/ratio columns
-            if h.endswith("_val") or h in {"age_days", "coverage"} or h.endswith("_to_liab") or h.endswith("_ratio") or h.endswith("_coverage") or h.endswith("_to_debt"):
-                 # Note: age_days/coverage are inside report_meta in xbrl_extract, 
-                 # but build_rx_snapshot flattens them into "q_age_days", etc.
-                 # So r.get(h) works directly.
-                 # Check if it's a numeric column
-                 if "val" in h or "ratio" in h or "to_" in h or "age_" in h or "coverage" in h:
-                     val = num(val)
-            
-            # has_companyfacts is integer
-            if h == "has_companyfacts":
-                val = int(val) if val is not None else 0
-
-            row.append(val)
-
+            v = r.get(h, "")
+            if is_numeric_col(h):
+                row.append(to_number(v))
+            else:
+                row.append(v)
         ws.append(row)
 
     ws.freeze_panes = "A2"
@@ -186,30 +176,35 @@ def write_rx_snapshot_xlsx(results: list[dict[str, Any]], path: str) -> None:
     # widths
     for i, h in enumerate(headers, start=1):
         col = get_column_letter(i)
-        if h in {"entityName", "error"}:
+        if h in {"entityName"}:
+            ws.column_dimensions[col].width = 40
+        elif h.endswith("_error") or h.endswith("error"):
             ws.column_dimensions[col].width = 40
         elif h in {"cik"}:
             ws.column_dimensions[col].width = 12
-        elif h.endswith("_tag") or "report_" in h:
+        elif h.endswith("_tag") or h.endswith("_form") or h.endswith("_fp") or h.endswith("_filed"):
             ws.column_dimensions[col].width = 22
+        elif h.endswith("report_end"):
+            ws.column_dimensions[col].width = 14
         else:
             ws.column_dimensions[col].width = 16
 
     # number formats
-    # Heuristic: if header ends with _val -> integer/number format
-    # if header is a ratio -> 3 decimals
-    
-    val_suffixes = ("_val",)
-    ratio_suffixes = ("_to_liab", "_ratio", "_to_assets", "_coverage", "_to_debt")
-
     for row_idx in range(2, ws.max_row + 1):
         for col_idx, h in enumerate(headers, start=1):
             cell = ws.cell(row=row_idx, column=col_idx)
-            if isinstance(cell.value, (int, float)):
-                if any(h.endswith(s) for s in val_suffixes):
-                     cell.number_format = "#,##0"
-                elif any(h.endswith(s) for s in ratio_suffixes):
-                     cell.number_format = "0.000"
+            if not isinstance(cell.value, (int, float)):
+                continue
+
+            if h.endswith("_val"):
+                cell.number_format = "#,##0"
+            elif h.endswith("age_days"):
+                cell.number_format = "0"
+            else:
+                for suf in ratio_suffixes:
+                    if h == suf or h.endswith("_" + suf):
+                        cell.number_format = "0.000"
+                        break
 
     wb.save(p)
     log.info("Wrote %s (%d rows)", str(p), len(results))
