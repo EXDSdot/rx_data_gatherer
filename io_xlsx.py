@@ -59,7 +59,7 @@ def load_cik_event_dates_xlsx(path: str, sheet_name: str | None = None) -> list[
                 return i
         return None
 
-    cik_col = find_col({"cik", "cik10", "company_cik"}) or 0
+    cik_col = find_col({"cikbefore"}) or 0
     start_col = find_col({"start", "start_date", "from", "from_date"}) or 1
 
     out: list[tuple[str, str]] = []

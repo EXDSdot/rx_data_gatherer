@@ -17,7 +17,7 @@ class Settings:
     )
 
     # Global request throttling
-    max_rps: float = float(os.getenv("MAX_RPS", "3"))
+    max_rps: float = float(os.getenv("MAX_RPS", "8"))
     max_concurrency: int = int(os.getenv("MAX_CONCURRENCY", "20"))
     timeout_seconds: float = float(os.getenv("HTTP_TIMEOUT", "30"))
 
@@ -26,7 +26,7 @@ class Settings:
     max_report_age_days: int = int(os.getenv("MAX_REPORT_AGE_DAYS", "160"))
 
     # IO
-    input_xlsx: str = os.getenv("INPUT_XLSX", "input.xlsx")
+    input_xlsx: str = "input.xlsx"
     input_sheet: str | None = os.getenv("INPUT_SHEET") or None
     limit_rows: int = int(os.getenv("LIMIT_ROWS", "0"))  # 0 = all
     out_xlsx: str = os.getenv("OUT_XLSX", "rx_solvency_snapshot.xlsx")
