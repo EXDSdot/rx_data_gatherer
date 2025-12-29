@@ -12,7 +12,7 @@ from aiolimiter import AsyncLimiter
 from rich.live import Live
 from tenacity import (
     retry,
-    retry_if_exception_type,
+    retry_if_exception,
     stop_after_attempt,
     wait_exponential_jitter,
 )
@@ -54,6 +54,20 @@ def setup_logging(log_path: str, console_level: int = logging.ERROR) -> None:
 # -----------------------------
 class EdgarError(RuntimeError):
     pass
+
+def _should_retry_error(exc: BaseException) -> bool:
+    """
+    Retry on network errors or HTTP errors, EXCEPT 404.
+    """
+    if isinstance(exc, httpx.RequestError):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        # Don't retry 404 Not Found
+        if exc.response.status_code == 404:
+            return False
+        # Retry others (5xx, 429, etc.)
+        return True
+    return False
 
 
 # -----------------------------
@@ -198,7 +212,7 @@ class EdgarAsyncClient:
         reraise=True,
         stop=stop_after_attempt(4),
         wait=wait_exponential_jitter(initial=0.5, max=8.0),
-        retry=retry_if_exception_type((httpx.RequestError, httpx.HTTPStatusError)),
+        retry=retry_if_exception(_should_retry_error),
     )
     async def _get_json(self, url: str) -> dict[str, Any]:
         async with self._sem:

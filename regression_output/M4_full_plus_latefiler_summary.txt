@@ -1,0 +1,37 @@
+
+Call:
+glm(formula = f4, family = binomial(), data = df_sup)
+
+Coefficients: (1 not defined because of singularities)
+                        Estimate Std. Error z value Pr(>|z|)    
+(Intercept)           -14.679183 484.529853  -0.030   0.9758    
+ebit_over_assets        0.218186   0.740788   0.295   0.7684    
+incomebe_over_assets   -3.430996   1.484171  -2.312   0.0208 *  
+assets_over_liab       -1.047160   0.242120  -4.325 1.53e-05 ***
+netincome_over_assets   3.364975   1.324386   2.541   0.0111 *  
+log_assets              0.025482   0.097739   0.261   0.7943    
+log_employees           0.017099   0.074258   0.230   0.8179    
+voluntary2              0.100161   0.801048   0.125   0.9005    
+filingrate              0.009187   0.004352   2.111   0.0348 *  
+ceo_replaced1           4.030952   0.252375  15.972  < 2e-16 ***
+ceo_replacedMISSING     2.935971   0.487798   6.019 1.76e-09 ***
+chapter1               13.176549 484.529186   0.027   0.9783    
+claimsagent2           -2.202682   1.017139  -2.166   0.0303 *  
+claimsagentMISSING     -0.381618   0.259023  -1.473   0.1407    
+commcred2               0.343982   0.426914   0.806   0.4204    
+commcredMISSING        -1.006701   1.305864  -0.771   0.4408    
+prepackaged2                  NA         NA      NA       NA    
+prepackaged3            2.130881   0.301122   7.076 1.48e-12 ***
+prepackagedMISSING      2.378896   0.531991   4.472 7.76e-06 ***
+late_filer_flag_180d   -0.300727   0.225945  -1.331   0.1832    
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+(Dispersion parameter for binomial family taken to be 1)
+
+    Null deviance: 1279.54  on 969  degrees of freedom
+Residual deviance:  598.16  on 951  degrees of freedom
+AIC: 636.16
+
+Number of Fisher Scoring iterations: 15
+

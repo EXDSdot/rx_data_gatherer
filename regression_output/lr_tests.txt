@@ -1,0 +1,89 @@
+
+> cat("LR TESTS (same dataset; NAs imputed on superset)\n\n")
+LR TESTS (same dataset; NAs imputed on superset)
+
+
+> if (!is.null(m2)) {
++   cat("M1 vs M2 (adds prepackaged):\n")
++   print(lrtest(m1, m2)); cat("\n")
++ }
+M1 vs M2 (adds prepackaged):
+Likelihood ratio test
+
+Model 1: emerge ~ ebit_over_assets + incomebe_over_assets + assets_over_liab + 
+    netincome_over_assets + log_assets + log_employees + voluntary + 
+    filingrate + ceo_replaced + chapter + claimsagent + commcred
+Model 2: emerge ~ ebit_over_assets + incomebe_over_assets + assets_over_liab + 
+    netincome_over_assets + log_assets + log_employees + voluntary + 
+    filingrate + ceo_replaced + chapter + claimsagent + commcred + 
+    prepackaged
+  #Df  LogLik Df Chisq Pr(>Chisq)    
+1  16 -333.38                        
+2  18 -299.96  2 66.83  3.077e-15 ***
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+
+> if (!is.null(m3)) {
++   cat("M1 vs M3 (adds late_filer_flag_180d):\n")
++   print(lrtest(m1, m3)); cat("\n")
++ }
+M1 vs M3 (adds late_filer_flag_180d):
+Likelihood ratio test
+
+Model 1: emerge ~ ebit_over_assets + incomebe_over_assets + assets_over_liab + 
+    netincome_over_assets + log_assets + log_employees + voluntary + 
+    filingrate + ceo_replaced + chapter + claimsagent + commcred
+Model 2: emerge ~ ebit_over_assets + incomebe_over_assets + assets_over_liab + 
+    netincome_over_assets + log_assets + log_employees + voluntary + 
+    filingrate + ceo_replaced + chapter + claimsagent + commcred + 
+    late_filer_flag_180d
+  #Df  LogLik Df  Chisq Pr(>Chisq)  
+1  16 -333.38                       
+2  17 -331.92  1 2.9199    0.08749 .
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+
+> if (!is.null(m4) && !is.null(m2)) {
++   cat("M2 vs M4 (adds late_filer_flag_180d on top of FULL model w/ prepackaged):\n")
++   print(lrtest(m2, m4)) .... [TRUNCATED] 
+M2 vs M4 (adds late_filer_flag_180d on top of FULL model w/ prepackaged):
+Likelihood ratio test
+
+Model 1: emerge ~ ebit_over_assets + incomebe_over_assets + assets_over_liab + 
+    netincome_over_assets + log_assets + log_employees + voluntary + 
+    filingrate + ceo_replaced + chapter + claimsagent + commcred + 
+    prepackaged
+Model 2: emerge ~ ebit_over_assets + incomebe_over_assets + assets_over_liab + 
+    netincome_over_assets + log_assets + log_employees + voluntary + 
+    filingrate + ceo_replaced + chapter + claimsagent + commcred + 
+    prepackaged + late_filer_flag_180d
+  #Df  LogLik Df Chisq Pr(>Chisq)
+1  18 -299.96                    
+2  19 -299.08  1 1.767     0.1838
+
+
+> if (!is.null(m4) && !is.null(m3)) {
++   cat("M3 vs M4 (adds prepackaged on top of late_filer):\n")
++   print(lrtest(m3, m4)); cat("\n")
++ }
+M3 vs M4 (adds prepackaged on top of late_filer):
+Likelihood ratio test
+
+Model 1: emerge ~ ebit_over_assets + incomebe_over_assets + assets_over_liab + 
+    netincome_over_assets + log_assets + log_employees + voluntary + 
+    filingrate + ceo_replaced + chapter + claimsagent + commcred + 
+    late_filer_flag_180d
+Model 2: emerge ~ ebit_over_assets + incomebe_over_assets + assets_over_liab + 
+    netincome_over_assets + log_assets + log_employees + voluntary + 
+    filingrate + ceo_replaced + chapter + claimsagent + commcred + 
+    prepackaged + late_filer_flag_180d
+  #Df  LogLik Df  Chisq Pr(>Chisq)    
+1  17 -331.92                         
+2  19 -299.08  2 65.677  5.476e-15 ***
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+
+> sink()

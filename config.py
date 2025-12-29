@@ -31,6 +31,9 @@ class Settings:
     limit_rows: int = int(os.getenv("LIMIT_ROWS", "0"))  # 0 = all
     out_xlsx: str = os.getenv("OUT_XLSX", "rx_solvency_snapshot.xlsx")
     log_path: str = os.getenv("LOG_PATH", "run.log")
+    
+    # External Data
+    lopucki_xlsx: str = os.getenv("LOPUCKI_XLSX", "brd.xlsx")
 
 
 # -----------------------------

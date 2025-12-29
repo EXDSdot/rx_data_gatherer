@@ -68,3 +68,44 @@ def write_submissions_snapshot_xlsx(
                 cell.number_format = "0.000"
 
     wb.save(p)
+
+
+def write_used_dates_xlsx(
+    rows: list[dict[str, str]],
+    path: str
+) -> None:
+    """
+    Writes the 'used filings' audit log to a separate Excel file.
+    """
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "used_dates"
+
+    headers = ["cik", "entityName", "event_date", "filing_date", "form"]
+    ws.append(headers)
+
+    # header style
+    for col in range(1, len(headers) + 1):
+        c = ws.cell(row=1, column=col)
+        c.font = Font(bold=True)
+        c.fill = PatternFill("solid", fgColor="E0E0E0")
+        c.alignment = Alignment(horizontal="center", vertical="center")
+
+    for r in rows:
+        row = [r.get(h, "") for h in headers]
+        ws.append(row)
+
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}1"
+
+    # simple widths
+    ws.column_dimensions["A"].width = 12  # cik
+    ws.column_dimensions["B"].width = 40  # entity
+    ws.column_dimensions["C"].width = 15  # event_date
+    ws.column_dimensions["D"].width = 15  # filing_date
+    ws.column_dimensions["E"].width = 15  # form
+
+    wb.save(p)

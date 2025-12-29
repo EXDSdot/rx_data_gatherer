@@ -1,0 +1,31 @@
+
+Call:
+glm(formula = f4, family = binomial(), data = df_sup)
+
+Coefficients:
+                       Estimate Std. Error z value Pr(>|z|)    
+(Intercept)           -4.184055   1.577095  -2.653  0.00798 ** 
+ebit_over_assets       1.038476   1.435472   0.723  0.46941    
+incomebe_over_assets  -3.037717   2.297964  -1.322  0.18620    
+assets_over_liab      -0.229236   0.403573  -0.568  0.57002    
+netincome_over_assets  2.009543   2.100887   0.957  0.33881    
+log_assets             0.083614   0.150010   0.557  0.57726    
+log_employees          0.175661   0.117419   1.496  0.13465    
+voluntary2            -0.006147   2.625197  -0.002  0.99813    
+filingrate             0.009702   0.007656   1.267  0.20504    
+ceo_replaced1          4.213020   0.401612  10.490  < 2e-16 ***
+claimsagent2          -1.619113   1.290125  -1.255  0.20948    
+commcred2              1.127731   0.796448   1.416  0.15679    
+prepackaged3           2.000576   0.455141   4.396 1.11e-05 ***
+late_filer_flag_180d  -0.627083   0.389802  -1.609  0.10768    
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+(Dispersion parameter for binomial family taken to be 1)
+
+    Null deviance: 496.6  on 373  degrees of freedom
+Residual deviance: 212.4  on 360  degrees of freedom
+AIC: 240.4
+
+Number of Fisher Scoring iterations: 6
+

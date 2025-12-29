@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import date, datetime
+from datetime import datetime, date
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +29,7 @@ def _to_iso_date(val: Any) -> str | None:
     if len(s) >= 10 and s[4] == "-" and s[7] == "-":
         return s[:10]
 
+    # common formats
     for fmt in ("%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", "%m-%d-%Y", "%Y/%m/%d"):
         try:
             return datetime.strptime(s, fmt).date().isoformat()
@@ -40,17 +41,24 @@ def _to_iso_date(val: Any) -> str | None:
 
 def load_cik_event_dates_xlsx(path: str, sheet_name: str | None = None) -> list[tuple[str, str]]:
     """
-    Reads .xlsx with columns: CIK | start_date | end_date
-    We use start_date as event_date.
+    Reads .xlsx with columns for CIK and Event Date.
+    Supports standard names (CIK, start_date) and LoPucki BRD names (CikBefore, DateFiled).
     """
     if not os.path.exists(path):
         log.error("Excel file not found: %s (cwd=%s)", path, os.getcwd())
         return []
 
-    wb = load_workbook(path, read_only=True, data_only=False)
+    wb = load_workbook(path, read_only=True, data_only=True)
     ws = wb[sheet_name] if sheet_name else wb.active
 
-    header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True))
+    # Read header
+    row_iter = ws.iter_rows(min_row=1, max_row=1, values_only=True)
+    try:
+        header_row = next(row_iter)
+    except StopIteration:
+        log.error("Excel file %s is empty", path)
+        return []
+
     header = [str(x).strip().lower() if x is not None else "" for x in header_row]
 
     def find_col(names: set[str]) -> int | None:
@@ -59,25 +67,45 @@ def load_cik_event_dates_xlsx(path: str, sheet_name: str | None = None) -> list[
                 return i
         return None
 
-    cik_col = find_col({"cik", "cik10", "company_cik"}) or 0
-    start_col = find_col({"start", "start_date", "from", "from_date"}) or 1
+    # Expanded candidates for BRD support
+    # Note: 'or 0' / 'or 1' fallbacks are kept for legacy/headerless support, 
+    # but specific headers will take precedence.
+    cik_col = find_col({"cikbefore", "cik_before"})
+    if cik_col is None:
+        cik_col = 0
+        
+    start_col = find_col({
+        "datefiled", "date_filed"
+    })
+    if start_col is None:
+        start_col = 1
 
     out: list[tuple[str, str]] = []
     skipped = 0
 
     for row in ws.iter_rows(min_row=2, values_only=True):
-        if row is None or len(row) <= max(cik_col, start_col):
+        if row is None:
+            continue
+            
+        # Ensure row is long enough
+        max_idx = max(cik_col, start_col)
+        if len(row) <= max_idx:
             continue
 
         cik_raw = row[cik_col]
         start_raw = row[start_col]
 
-        if cik_raw is None or start_raw is None:
+        if cik_raw is None:
             skipped += 1
             continue
 
         cik_str = str(cik_raw).strip()
         if not cik_str:
+            skipped += 1
+            continue
+
+        # Check for non-date placeholders often found in raw data
+        if start_raw is None or str(start_raw).strip() == "":
             skipped += 1
             continue
 
@@ -88,7 +116,7 @@ def load_cik_event_dates_xlsx(path: str, sheet_name: str | None = None) -> list[
 
         out.append((cik_str, event_iso))
 
-    log.info("Loaded %d rows (skipped %d)", len(out), skipped)
+    log.info("Loaded %d rows (skipped %d) from %s", len(out), skipped, path)
     return out
 
 
@@ -218,183 +246,6 @@ def write_rx_snapshot_xlsx(results: list[dict[str, Any]], path: str) -> None:
     wb.save(p)
     log.info("Wrote %s (%d rows)", str(p), len(results))
 
-from openpyxl import Workbook, load_workbook
-from openpyxl.utils import get_column_letter
-from openpyxl.styles import Font, Alignment, PatternFill
-from datetime import datetime, date
-from pathlib import Path
-from typing import Any
-
-def _to_iso_date(val: Any) -> str | None:
-    if val is None:
-        return None
-    if isinstance(val, (datetime, date)):
-        return val.date().isoformat() if isinstance(val, datetime) else val.isoformat()
-    s = str(val).strip()
-    if not s:
-        return None
-    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
-        return s[:10]
-    for fmt in ("%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", "%m-%d-%Y", "%Y/%m/%d"):
-        try:
-            return datetime.strptime(s, fmt).date().isoformat()
-        except ValueError:
-            pass
-    return None
-
-def load_court_cases_xlsx(path: str, sheet_name: str | None = None) -> list[dict[str, str]]:
-    wb = load_workbook(path, read_only=True, data_only=False)
-    ws = wb[sheet_name] if sheet_name else wb.active
-
-    header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True))
-    header = [str(x).strip().lower() if x is not None else "" for x in header_row]
-
-    def find_col(names: set[str]) -> int | None:
-        for i, h in enumerate(header):
-            if h in names:
-                return i
-        return None
-
-    cik_col = find_col({"cik", "cik10"})  # optional
-    court_col = find_col({"court", "venue", "court_code"}) or 0
-    docket_col = find_col({"docket_number", "docket", "case_number", "case_no"}) or 1
-    filed_col = find_col({"filed_date", "date_filed", "filed", "petition_date"}) or 2
-
-    out: list[dict[str, str]] = []
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        if row is None or len(row) <= max(filter(lambda x: x is not None, [court_col, docket_col, filed_col])):
-            continue
-
-        cik = ""
-        if cik_col is not None and cik_col < len(row) and row[cik_col] is not None:
-            cik = str(row[cik_col]).strip()
-
-        court = str(row[court_col]).strip() if row[court_col] is not None else ""
-        docket_number = str(row[docket_col]).strip() if row[docket_col] is not None else ""
-        filed_iso = _to_iso_date(row[filed_col])
-
-        if not court or not docket_number or not filed_iso:
-            continue
-
-        out.append(
-            {
-                "cik": cik,
-                "court": court,
-                "docket_number": docket_number,
-                "filed_date": filed_iso,
-            }
-        )
-
-    return out
-
-def write_court_metrics_xlsx(results: list[dict[str, Any]], path: str = "court_metrics.xlsx") -> None:
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-
-    # infer window columns present
-    def _window_key_num(k: str) -> int:
-        # "docket_count_90d" -> 90
-        try:
-            return int(k.split("_")[-1].rstrip("d"))
-        except Exception:
-            return 10**9
-
-    docket_cols = sorted([k for k in results for k in (k for k in k and [] )], key=_window_key_num)  # dummy to satisfy linters
-    all_keys = set()
-    for r in results:
-        if isinstance(r, dict):
-            all_keys.update(r.keys())
-
-    docket_cols = sorted([k for k in all_keys if k.startswith("docket_count_")], key=_window_key_num)
-    motion_cols = sorted([k for k in all_keys if k.startswith("motion_count_")], key=_window_key_num)
-
-    headers = [
-        "cik", "court", "docket_number", "filed_date",
-        "found", "docket_id", "total_entries_loaded",
-        *docket_cols,
-        *motion_cols,
-        "error",
-    ]
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "court_metrics"
-    ws.append(headers)
-
-    # header style
-    for col in range(1, len(headers) + 1):
-        c = ws.cell(row=1, column=col)
-        c.font = Font(bold=True)
-        c.fill = PatternFill("solid", fgColor="F2F2F2")
-        c.alignment = Alignment(horizontal="center", vertical="center")
-
-    for r in results:
-        r = r if isinstance(r, dict) else {}
-        row = [
-            r.get("cik", ""),
-            r.get("court", ""),
-            r.get("docket_number", ""),
-            r.get("filed_date", ""),
-            r.get("found", ""),
-            r.get("docket_id", ""),
-            r.get("total_entries_loaded", ""),
-        ]
-        row += [r.get(k, "") for k in docket_cols]
-        row += [r.get(k, "") for k in motion_cols]
-        row += [r.get("error", "")]
-        ws.append(row)
-
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}1"
-
-    for i, h in enumerate(headers, start=1):
-        col = get_column_letter(i)
-        if h in {"error"}:
-            ws.column_dimensions[col].width = 40
-        elif h in {"docket_number"}:
-            ws.column_dimensions[col].width = 22
-        else:
-            ws.column_dimensions[col].width = 16
-
-    wb.save(p)
-
-
-
-import logging
-import os
-from datetime import datetime, date
-from pathlib import Path
-from typing import Any
-
-from openpyxl import Workbook, load_workbook
-from openpyxl.styles import Alignment, Font, PatternFill
-from openpyxl.utils import get_column_letter
-
-
-def _to_iso_date(val: Any) -> str | None:
-    if val is None:
-        return None
-    if isinstance(val, datetime):
-        return val.date().isoformat()
-    if isinstance(val, date):
-        return val.isoformat()
-
-    s = str(val).strip()
-    if not s:
-        return None
-
-    # already ISO
-    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
-        return s[:10]
-
-    # common Excel-ish formats
-    for fmt in ("%m/%d/%Y", "%d/%m/%Y", "%Y/%m/%d", "%d-%m-%Y", "%m-%d-%Y"):
-        try:
-            return datetime.strptime(s, fmt).date().isoformat()
-        except ValueError:
-            pass
-    return None
-
 
 def load_court_cases_xlsx(path: str, sheet_name: str | None = None) -> list[dict[str, str]]:
     """
@@ -426,10 +277,10 @@ def load_court_cases_xlsx(path: str, sheet_name: str | None = None) -> list[dict
                 return i
         return None
 
-    cik_col = find_col({"cik", "cik10"})
+    cik_col = find_col({"cik", "cik10", "cikbefore", "cik_before"})
     court_col = find_col({"court", "court_code"})
     docket_col = find_col({"docket_number", "docket", "case_number", "case_no", "case"})
-    filed_col = find_col({"filed_date", "filed", "petition_date", "date_filed"})
+    filed_col = find_col({"filed_date", "filed", "petition_date", "date_filed", "datefiled"})
 
     if cik_col is None or court_col is None or docket_col is None or filed_col is None:
         log.error(

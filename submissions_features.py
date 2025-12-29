@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any, Iterable
 
+import httpx
 from edgar_client import EdgarAsyncClient
 from config import Settings
 
@@ -106,6 +107,13 @@ async def fetch_submissions_snapshot_for_case(
 
     try:
         sub = await client.get_submissions(cik10)
+    except httpx.HTTPStatusError as e:
+        # Handle 404 gently without full traceback
+        if e.response.status_code == 404:
+            log.warning("submissions 404 Not Found | %s", cik10)
+        else:
+            log.exception("submissions http error | %s | %s", cik10, e)
+        return {"cik": cik10, "event_date": event_iso, "error": str(e)}
     except Exception as e:
         log.exception("submissions failed | %s | %s", cik10, e)
         return {"cik": cik10, "event_date": event_iso, "error": str(e)}
@@ -117,6 +125,9 @@ async def fetch_submissions_snapshot_for_case(
     NT_10K = {"NT 10-K"}
     NT_10Q = {"NT 10-Q"}
     TENK_TENQ = {"10-K", "10-K/A", "10-Q", "10-Q/A"}
+    
+    # Combined set for logging "used" forms
+    ALL_INTERESTING = EIGHTK | NT_10K | NT_10Q | TENK_TENQ
 
     out: dict[str, Any] = {
         "cik": cik10,
@@ -124,6 +135,34 @@ async def fetch_submissions_snapshot_for_case(
         "event_date": event_d.isoformat(),
         "error": "",
     }
+
+    # --- Collect the dates actually USED in calculations ---
+    max_days = max(windows.days) if windows.days else 180
+    earliest_start = event_d - timedelta(days=max_days)
+    
+    used_filings: list[dict[str, str]] = []
+
+    for f_raw, d_raw in zip(forms, filing_dates):
+        d = _as_date_iso(d_raw)
+        if not d:
+            continue
+        
+        # Only log if it's within the analysis window (start to event_date)
+        if earliest_start <= d <= event_d:
+            f_norm = _norm_form(f_raw)
+            if f_norm in ALL_INTERESTING:
+                used_filings.append({"date": d.isoformat(), "form": f_norm})
+
+    # Store for main to write to Excel
+    out["_used_filings"] = used_filings
+
+    # Logging trace (optional, kept for debugging)
+    if used_filings:
+        items = [f"{u['date']}({u['form']})" for u in used_filings]
+        log.info("CIK %s event %s USED forms: %s", cik10, event_iso, ", ".join(items))
+    else:
+        log.info("CIK %s event %s: No relevant forms found in window.", cik10, event_iso)
+    # ---------------------------------------------------
 
     for nd in windows.days:
         start = event_d - timedelta(days=nd)

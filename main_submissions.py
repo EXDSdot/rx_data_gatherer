@@ -10,8 +10,9 @@ from rich.live import Live
 from config import Settings
 from edgar_client import EdgarAsyncClient, RunStats, progress_reporter, setup_logging
 from io_xlsx import load_cik_event_dates_xlsx
-from io_submissions_xlsx import write_submissions_snapshot_xlsx
+from io_submissions_xlsx import write_submissions_snapshot_xlsx, write_used_dates_xlsx
 from submissions_features import SubmissionsWindows, fetch_submissions_snapshot_for_case
+from post_merge import merge_lopucki_to_features, generate_regression_file
 
 
 def _parse_days_env(s: str) -> tuple[int, ...]:
@@ -61,7 +62,11 @@ async def main() -> int:
     try:
         async def _wrap_unit(coro):
             try:
-                return await coro
+                res = await coro
+                # Check for CLI warnings (e.g. future dates) passed from the feature extractor
+                if warning := res.get("_cli_warning"):
+                    console.print(warning)
+                return res
             finally:
                 await stats.record_unit_done()
 
@@ -76,8 +81,59 @@ async def main() -> int:
             base_dir = os.path.dirname(__file__)
             out_path = os.path.join(base_dir, out_path)
 
+        # 1. Write the main features Excel
         write_submissions_snapshot_xlsx(results, days=days, path=out_path)
-        log.info("Done. Output: %s", out_path)
+
+        # 2. Write the "used dates" audit Excel
+        used_rows = []
+        for res in results:
+            cik = str(res.get("cik", ""))
+            ename = str(res.get("entityName", ""))
+            edate = str(res.get("event_date", ""))
+            
+            filings = res.get("_used_filings", [])
+            
+            if not filings:
+                used_rows.append({
+                    "cik": cik, 
+                    "entityName": ename, 
+                    "event_date": edate,
+                    "filing_date": "(none)",
+                    "form": "(none)"
+                })
+            else:
+                for f in filings:
+                    used_rows.append({
+                        "cik": cik,
+                        "entityName": ename,
+                        "event_date": edate,
+                        "filing_date": f.get("date", ""),
+                        "form": f.get("form", "")
+                    })
+
+        used_out_path = out_path.replace(".xlsx", "_used_dates.xlsx")
+        if used_out_path == out_path:
+            used_out_path = out_path + "_used_dates.xlsx"
+        
+        write_used_dates_xlsx(used_rows, used_out_path)
+        
+        log.info("Done features. Output: %s and %s", out_path, used_out_path)
+
+        # 3. Merge with LoPucki BRD if available
+        log.info("Starting merge with external dataset at %s...", settings.lopucki_xlsx)
+        merged_file_path = merge_lopucki_to_features(
+            features_path=out_path, 
+            lopucki_path=settings.lopucki_xlsx
+        )
+
+        # 4. Generate Regression Data
+        if merged_file_path and os.path.exists(merged_file_path):
+            reg_out_path = out_path.replace(".xlsx", "_regression.xlsx")
+            if reg_out_path == out_path:
+                reg_out_path += "_regression.xlsx"
+                
+            generate_regression_file(merged_file_path, reg_out_path)
+
         return 0
 
     finally:
